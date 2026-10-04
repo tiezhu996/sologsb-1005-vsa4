@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "start": "ng serve --host 0.0.0.0 --port 4200",
-    "build": "ng build --configuration production"
+    "build": "ng build --configuration production",
+    "test:logic": "esbuild scripts/test-review-merge.mts --bundle --platform=node --format=esm --log-level=warning --outfile=scripts/.test-build.mjs && node scripts/.test-build.mjs",
+    "test:store": "esbuild scripts/test-case-store.mts --bundle --platform=node --format=esm --log-level=warning --outfile=scripts/.test-store.mjs && node scripts/.test-store.mjs",
+    "test": "npm run test:logic && npm run test:store"
   },
   "dependencies": {
     "@angular/common": "19.2.25",

@@ -6,12 +6,20 @@
       <div><strong>权利要求映射工作台</strong><small>Claim-to-Spec Traceability</small></div>
     </div>
     <div class="top-actions">
-      <span class="save-state">浏览器本地自动保存</span>
+      <span class="save-state">本地双库原子写入 · 失败保住上一版</span>
       <p-button label="撤销" icon="pi pi-undo" severity="secondary" [outlined]="true" [disabled]="!history.past" (onClick)="service.undo()" pTooltip="Ctrl / ⌘ + Z"></p-button>
       <p-button label="重做" icon="pi pi-redo" severity="secondary" [outlined]="true" [disabled]="!history.future" (onClick)="service.redo()" pTooltip="Ctrl / ⌘ + Shift + Z"></p-button>
       <p-button label="保存版本" icon="pi pi-save" (onClick)="versionDialog = true" pTooltip="Ctrl / ⌘ + S"></p-button>
     </div>
   </header>
+
+  <div class="notice-bar" *ngIf="notices.length">
+    <article *ngFor="let notice of notices" class="notice" [class.warn]="notice.kind === 'failed'" [class.ok]="notice.kind === 'recovered'" [class.info]="notice.kind === 'migrated'">
+      <i class="pi" [class.pi-database]="notice.kind === 'migrated'" [class.pi-shield]="notice.kind === 'recovered'" [class.pi-exclamation-triangle]="notice.kind === 'failed'"></i>
+      <div><strong>{{ notice.kind === 'failed' ? '存储写入失败' : notice.kind === 'migrated' ? '旧数据已升级' : '已从备份恢复' }}</strong><p>{{ notice.message }}</p></div>
+      <button type="button" class="notice-close" (click)="dismissNotice(notice.id)" aria-label="关闭通知"><i class="pi pi-times"></i></button>
+    </article>
+  </div>
 
   <main id="workbench" class="workbench">
     <aside class="case-sidebar">
@@ -19,6 +27,16 @@
         <label for="role">当前角色</label>
         <p-select inputId="role" [options]="roleOptions" optionLabel="label" optionValue="value" [ngModel]="state.role" (ngModelChange)="service.setRole($event)" />
         <p class="hint">{{ currentRoleLabel }}。批注权限按作者锁定。</p>
+      </section>
+
+      <section class="panel baseline-mini">
+        <div class="panel-heading"><span>冻结基线</span>
+          <p-badge *ngIf="pendingItems.length" [value]="pendingItems.length + ' 待决'" severity="warn" />
+          <p-badge *ngIf="baseline && !pendingItems.length" value="已冻结" severity="success" />
+        </div>
+        <p class="hint" *ngIf="baseline">当前基线：{{ baseline.packageId }}<br>{{ baseline.createdAt | date:'yyyy-MM-dd HH:mm' }} · {{ baseline.createdByName }}</p>
+        <p class="hint" *ngIf="!baseline">尚未冻结，外部复核前请先建立基线。</p>
+        <button type="button" class="inline-link" (click)="service.setTab('review')">前往冻结与复核 <i class="pi pi-arrow-right"></i></button>
       </section>
 
       <section class="panel">
@@ -55,6 +73,9 @@
       <nav class="tabs" aria-label="工作台视图">
         <button [class.active]="state.activeTab === 'mapping'" (click)="service.setTab('mapping')"><i class="pi pi-sitemap"></i>特征映射</button>
         <button [class.active]="state.activeTab === 'claim'" (click)="service.setTab('claim')"><i class="pi pi-file-edit"></i>权利要求录入</button>
+        <button [class.active]="state.activeTab === 'review'" (click)="service.setTab('review')"><i class="pi pi-snowflake"></i>冻结与复核
+          <em *ngIf="pendingItems.length" class="tab-dot">{{ pendingItems.length }}</em>
+        </button>
         <button [class.active]="state.activeTab === 'compare'" (click)="service.setTab('compare')"><i class="pi pi-arrows-h"></i>版本比较</button>
         <button [class.active]="state.activeTab === 'audit'" (click)="service.setTab('audit')"><i class="pi pi-check-square"></i>核对清单</button>
       </nav>
@@ -159,6 +180,145 @@
         </section>
       </div>
 
+      <div class="view" *ngIf="state.activeTab === 'review'">
+        <div class="review-grid">
+          <section class="panel freeze-panel">
+            <div class="panel-heading"><span><i class="pi pi-snowflake"></i> 冻结案件包</span>
+              <p-button label="冻结当前案卷" icon="pi pi-snowflake" size="small" [disabled]="service.hasActiveSession" (onClick)="openFreezeDialog()" pTooltip="有未决合并时不能产生新基线" />
+            </div>
+            <p class="hint">冻结包是发给外部复核员的只读整包；冻结后本机继续录入不会影响基线。确认合并后会自动补建合并后的新冻结包。</p>
+            <article class="baseline-card" *ngIf="baseline">
+              <header><strong>{{ baseline.note }}</strong><span class="status-chip ready">当前基线</span></header>
+              <dl>
+                <dt>包编号</dt><dd>{{ baseline.packageId }}</dd>
+                <dt>冻结时间</dt><dd>{{ baseline.createdAt | date:'yyyy-MM-dd HH:mm:ss' }}</dd>
+                <dt>冻结人</dt><dd>{{ baseline.createdByName }}</dd>
+                <dt>内容</dt><dd>{{ baseline.snapshot.claims.length }} 项权利要求 · {{ baseline.snapshot.features.length }} 个特征 · {{ baseline.snapshot.paragraphs.length }} 个段落</dd>
+                <dt>校验和</dt><dd class="mono">{{ baseline.checksum }}</dd>
+              </dl>
+              <div class="button-row">
+                <p-button label="导出冻结包（交外部复核）" icon="pi pi-download" [outlined]="true" (onClick)="downloadFrozenPackage(baseline)" />
+                <p-button label="本机模拟离线复核" icon="pi pi-external-link" severity="secondary" [outlined]="true" (onClick)="openReview(baseline)" />
+                <p-button *ngIf="draft" label="继续未完成的复核草稿" icon="pi pi-folder-open" severity="warn" [outlined]="true" (onClick)="resumeReview()" />
+              </div>
+            </article>
+            <div *ngIf="!baseline" class="empty-state large">还没有冻结基线，点击右上角“冻结当前案卷”生成首个基线。</div>
+
+            <div class="package-history" *ngIf="frozenPackages.length > 1">
+              <h3>历史冻结包（独立留存）</h3>
+              <div class="package-row" *ngFor="let pkg of frozenPackages">
+                <span><strong>{{ pkg.note }}</strong><small>{{ pkg.packageId }} · {{ pkg.createdAt | date:'yyyy-MM-dd HH:mm' }}</small></span>
+                <span class="mini-actions">
+                  <button type="button" class="inline-link" (click)="downloadFrozenPackage(pkg)">下载</button>
+                  <button type="button" class="inline-link" (click)="openReview(pkg)">复核</button>
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel import-panel">
+            <div class="panel-heading"><span><i class="pi pi-upload"></i> 导入复核变更单</span>
+              <p-button label="选择变更单文件" icon="pi pi-file-import" size="small" [disabled]="service.hasActiveSession" (onClick)="pickOrderFile()" />
+            </div>
+            <p class="hint">变更单仅包含按权利要求、技术特征、支持映射记录的增量。导入时逐项与冻结基线及本机现状三方比对，原对象已移除或两边都改过的条目会进入待决区，不会直接写入案卷。</p>
+            <div *ngIf="importFeedback" class="feedback" [class.ok]="importFeedback.ok" [class.bad]="!importFeedback.ok">
+              <i class="pi" [class.pi-check-circle]="importFeedback.ok" [class.pi-times-circle]="!importFeedback.ok"></i>
+              <p>{{ importFeedback.message }}</p>
+              <button type="button" class="notice-close" (click)="dismissFeedback()"><i class="pi pi-times"></i></button>
+            </div>
+            <div class="hint" *ngIf="service.hasActiveSession">存在进行中的合并会话，需先确认或放弃，才能导入新的变更单。</div>
+          </section>
+
+          <section class="panel merge-panel" *ngIf="mergeItems.length; else noSession">
+            <div class="panel-heading">
+              <span><i class="pi pi-list"></i> 逐项比对与待决区</span>
+              <span class="merge-counts">
+                <b class="ok-count">{{ cleanItems.length }} 可采用</b>
+                <b class="pending-count">{{ pendingItems.length }} 待决</b>
+                <b class="redundant-count">{{ redundantItems.length }} 冗余</b>
+                <b class="resolved-count">{{ resolvedItems.length }} 已裁决</b>
+              </span>
+            </div>
+
+            <div class="pending-zone" *ngIf="pendingItems.length">
+              <h3><i class="pi pi-exclamation-triangle"></i> 待决区（不许直接写入，逐项裁决）</h3>
+              <div class="bulk-row">
+                <p-button label="全部采用复核方" icon="pi pi-check" size="small" severity="warn" [outlined]="true" (onClick)="resolveAll('take-external')" />
+                <p-button label="全部保留本地" icon="pi pi-undo" size="small" severity="secondary" [outlined]="true" (onClick)="resolveAll('keep-local')" />
+              </div>
+              <article class="merge-item pending" *ngFor="let item of pendingItems">
+                <div class="merge-item-head">
+                  <span class="merge-tag" [class.danger]="item.status === 'pending-local-removed'" [class.warn]="item.status === 'pending-both-modified'">{{ statusBadge(item).label }}</span>
+                  <strong>{{ item.title }}</strong>
+                </div>
+                <p>{{ item.detail }}</p>
+                <div class="three-way" *ngIf="item.status === 'pending-both-modified'">
+                  <div><small>冻结基线</small><pre>{{ item.baselineObject | json }}</pre></div>
+                  <div><small>本机现状</small><pre>{{ item.localObject | json }}</pre></div>
+                  <div><small>复核方结果</small><pre>{{ item.externalObject | json }}</pre></div>
+                </div>
+                <p-button label="逐项裁决" icon="pi pi-gavel" size="small" (onClick)="openResolveDialog(item)" />
+              </article>
+            </div>
+
+            <div class="resolved-zone" *ngIf="resolvedItems.length">
+              <h3>已裁决条目</h3>
+              <article class="merge-item resolved" *ngFor="let item of resolvedItems">
+                <div class="merge-item-head"><span class="merge-tag ok">{{ item.resolution === 'take-external' ? '采用复核方' : '保留本地' }}</span><strong>{{ item.title }}</strong></div>
+                <p>{{ resolutionLabel(item) }}<ng-container *ngIf="item.resolutionNote"> · 备注：{{ item.resolutionNote }}</ng-container></p>
+              </article>
+            </div>
+
+            <div class="clean-zone">
+              <h3>可直接采用（{{ cleanItems.length }}）与冗余条目（{{ redundantItems.length }}）</h3>
+              <article class="merge-item clean" *ngFor="let item of cleanItems">
+                <div class="merge-item-head"><span class="merge-tag ok">可采用</span><strong>{{ item.title }}</strong></div>
+                <p>{{ item.detail }}</p>
+              </article>
+              <article class="merge-item redundant" *ngFor="let item of redundantItems">
+                <div class="merge-item-head"><span class="merge-tag muted">冗余</span><strong>{{ item.title }}</strong></div>
+                <p>{{ item.detail }}</p>
+              </article>
+            </div>
+
+            <div class="merge-actions">
+              <p-button label="确认合并并生成可编辑案卷" icon="pi pi-check-circle" [disabled]="!!pendingItems.length" (onClick)="confirmMerge()" pTooltip="离线复核员确认所有条目后执行；同时生成新冻结基线" />
+              <p-button label="放弃本次合并" icon="pi pi-times-circle" severity="danger" [outlined]="true" (onClick)="discardMerge()" />
+              <span class="hint" *ngIf="pendingItems.length">仍有 {{ pendingItems.length }} 个待决项，确认按钮已锁定。</span>
+              <div class="feedback-ok" *ngIf="confirmFeedback">{{ confirmFeedback }}</div>
+            </div>
+          </section>
+          <ng-template #noSession>
+            <section class="panel empty-state large">导入变更单后，这里会展示逐项三方比对结果与待决区。</section>
+          </ng-template>
+
+          <section class="panel records-panel">
+            <div class="panel-heading"><span><i class="pi pi-history"></i> 处理记录（与冻结包、变更单独立留存）</span></div>
+            <div class="session-history" *ngIf="archivedSessionList().length">
+              <h3>历史合并会话</h3>
+              <div class="session-row" *ngFor="let s of archivedSessionList()">
+                <div class="session-main">
+                  <strong>变更单 {{ s.orderId }}</strong>
+                  <small>复核员：{{ s.reviewerName }} · 导入 {{ s.importedAt | date:'yyyy-MM-dd HH:mm' }}
+                    · 状态：<b [class.confirmed]="s.status === 'confirmed'" [class.discarded]="s.status === 'discarded'">{{ s.status === 'confirmed' ? '已确认' : s.status === 'discarded' ? '已放弃' : '进行中' }}</b>
+                    <ng-container *ngIf="s.confirmedAt"> · 确认人：{{ s.confirmedByName }} · {{ s.confirmedAt | date:'yyyy-MM-dd HH:mm' }}</ng-container>
+                  </small>
+                </div>
+                <span class="session-counts">{{ s.items.length }} 项 · {{ adoptedCount(s) }} 采用 · {{ keptLocalCount(s) }} 保留本地</span>
+              </div>
+            </div>
+            <ul class="record-list">
+              <li *ngFor="let record of records.slice().reverse()">
+                <time>{{ record.at | date:'MM-dd HH:mm:ss' }}</time>
+                <span class="record-kind" [attr.data-kind]="record.kind">{{ recordKindLabel(record.kind) }}</span>
+                <p>{{ record.detail }}</p>
+              </li>
+            </ul>
+            <div *ngIf="!records.length" class="empty-state">暂无处理记录。</div>
+          </section>
+        </div>
+      </div>
+
       <div class="view" *ngIf="state.activeTab === 'compare'">
         <section class="panel compare-panel">
           <div class="panel-heading"><span>权利要求版本比较</span><p-button label="保存当前版本" icon="pi pi-save" (onClick)="versionDialog = true" /></div>
@@ -230,11 +390,95 @@
       </section>
       <section class="panel rule-card">
         <i class="pi pi-shield"></i>
-        <div><strong>批注权限隔离</strong><p>当前用户不能修改其他角色创建的批注，输入框保持只读。</p></div>
+        <div><strong>冻结基线保护</strong><p>外部只回传变更单；原对象已移除或两边都改过的条目先进入待决区，复核员确认后才写入案卷，旧冻结包、变更单与处理记录独立留存。</p></div>
       </section>
     </aside>
   </main>
 </div>
+
+<p-dialog header="冻结当前案卷" [(visible)]="freezeDialog" [modal]="true" [style]="{ width: '460px' }">
+  <div class="dialog-body">
+    <p>冻结包只包含权利要求、技术特征与说明书段落快照，作为外部复核的基线。冻结不影响你继续在本机编辑。</p>
+    <label>备注（发给复核员）<input pInputText [(ngModel)]="freezeNote" placeholder="例如：发给北京复核组的答复前版本" (keyup.enter)="confirmFreeze()"></label>
+  </div>
+  <ng-template pTemplate="footer">
+    <p-button label="取消" severity="secondary" [outlined]="true" (onClick)="freezeDialog = false" />
+    <p-button label="生成冻结包" icon="pi pi-snowflake" (onClick)="confirmFreeze()" />
+  </ng-template>
+</p-dialog>
+
+<p-dialog header="待决项裁决" [visible]="!!resolveItem" (visibleChange)="!$event && (resolveItem = null)" [modal]="true" [style]="{ width: '720px' }">
+  <div class="dialog-body" *ngIf="resolveItem as item">
+    <span class="merge-tag" [class.danger]="item.status === 'pending-local-removed'" [class.warn]="item.status === 'pending-both-modified'">{{ statusBadge(item).label }}</span>
+    <h3>{{ item.title }}</h3>
+    <p>{{ item.detail }}</p>
+    <div class="three-way">
+      <div><small>冻结基线</small><pre>{{ item.baselineObject | json }}</pre></div>
+      <div><small>本机现状</small><pre>{{ item.localObject | json }}</pre></div>
+      <div><small>复核方结果</small><pre>{{ item.externalObject | json }}</pre></div>
+    </div>
+    <label>裁决备注（可选）<input pInputText [(ngModel)]="resolveNote" placeholder="例如：本地编号以正式文本为准"></label>
+  </div>
+  <ng-template pTemplate="footer">
+    <p-button label="采用复核方版本" icon="pi pi-check" severity="warn" (onClick)="decideResolution('take-external')" />
+    <p-button label="保留本机版本" icon="pi pi-undo" severity="secondary" [outlined]="true" (onClick)="decideResolution('keep-local')" />
+  </ng-template>
+</p-dialog>
+
+<p-dialog [header]="'离线复核工作区 · ' + (reviewDraftState?.reviewerName || '复核员')" [(visible)]="reviewDialog" [modal]="true" [style]="{ width: '1100px' }" [closable]="false">
+  <div class="review-workbench" *ngIf="reviewDraftState as draft">
+    <div class="review-toolbar">
+      <label>复核员<input pInputText [ngModel]="reviewerName" (ngModelChange)="reviewerName = $event" (change)="saveReviewerName()"></label>
+      <span class="hint">草稿自动双库保存，关闭重开可继续；仅能基于冻结基线导出变更单。</span>
+    </div>
+    <div class="review-body">
+      <div class="review-claims">
+        <h4>权利要求</h4>
+        <button type="button" class="claim-nav" *ngFor="let c of draft.reviewed.claims" [class.active]="c.id === reviewSelectedClaimId" (click)="selectReviewClaim(c.id)">
+          <span class="claim-number">{{ c.number }}</span><span><strong>{{ c.title }}</strong></span>
+        </button>
+      </div>
+      <div class="review-edit" *ngIf="reviewClaim.claim as c">
+        <h4>权利要求正文（复核修改）</h4>
+        <div class="form-row title-fields">
+          <label>编号<input pInputText type="number" [value]="c.number" (change)="updateReviewClaim('number', $event)"></label>
+          <label>名称<input pInputText [value]="c.title" (change)="updateReviewClaim('title', $event)"></label>
+        </div>
+        <textarea pTextarea rows="5" [value]="c.text" (change)="updateReviewClaim('text', $event)"></textarea>
+
+        <div class="review-feature-head">
+          <h4>技术特征（{{ reviewClaim.features.length }}）</h4>
+          <p-button label="新增特征" icon="pi pi-plus" size="small" (onClick)="addReviewFeature()" />
+        </div>
+        <div class="review-features">
+          <button type="button" class="feature-item" *ngFor="let f of reviewClaim.features" [class.selected]="f.id === reviewSelectedFeatureId" (click)="selectReviewFeature(f.id)">
+            <span class="feature-index">{{ f.label.split('·')[0].trim() }}</span>
+            <span><strong>{{ f.label }}</strong><small>{{ f.text || '未填写' }}</small></span>
+          </button>
+        </div>
+        <div class="review-feature-edit" *ngIf="reviewFeature as f">
+          <label>特征名<input pInputText [value]="f.label" (change)="updateReviewFeatureField('label', $event)"></label>
+          <div class="stack-field">正文<textarea pTextarea rows="2" [value]="f.text" (change)="updateReviewFeatureField('text', $event)"></textarea></div>
+          <fieldset class="reference-fieldset">
+            <legend>支持映射（勾选建立 / 取消移除）</legend>
+            <label class="check-row" *ngFor="let p of draft.reviewed.paragraphs">
+              <input type="checkbox" [checked]="isReviewMapped(p.id)" (change)="toggleReviewMapping(p.id)">
+              <span>{{ p.section }} · {{ p.text.slice(0, 40) }}…</span>
+            </label>
+          </fieldset>
+          <p-button label="删除该特征" icon="pi pi-trash" severity="danger" [outlined]="true" size="small" (onClick)="deleteReviewFeature()" />
+        </div>
+      </div>
+    </div>
+    <div *ngIf="reviewMessage" class="review-message">{{ reviewMessage }}</div>
+    <label class="order-note">变更单备注<input pInputText [(ngModel)]="reviewOrderNote" placeholder="例如：补充特征G的支持依据，修正F用词"></label>
+  </div>
+  <ng-template pTemplate="footer">
+    <p-button label="关闭（草稿保留，可继续）" severity="secondary" [outlined]="true" (onClick)="closeReviewDialog()" />
+    <p-button label="结束并清除本机草稿" icon="pi pi-trash" severity="danger" [text]="true" (onClick)="service.closeDraft()" />
+    <p-button label="导出复核变更单" icon="pi pi-file-export" (onClick)="exportReviewOrder()" />
+  </ng-template>
+</p-dialog>
 
 <p-dialog header="保存版本快照" [(visible)]="versionDialog" [modal]="true" [style]="{ width: '460px' }">
   <div class="dialog-body">
